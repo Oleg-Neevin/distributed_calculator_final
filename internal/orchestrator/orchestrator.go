@@ -1,22 +1,18 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
 
 	"github.com/Oleg-Neevin/distributed_calculator_final/pkg"
+	pb "github.com/Oleg-Neevin/distributed_calculator_final/proto/generated/proto"
+	"google.golang.org/grpc"
 )
-
-type Task struct {
-	ID            int     `json:"id"`
-	Arg1          float64 `json:"arg1"`
-	Arg2          float64 `json:"arg2"`
-	Operation     string  `json:"operation"`
-	OperationTime int     `json:"operation_time"`
-}
 
 type Expression struct {
 	ID     int     `json:"id"`
@@ -26,22 +22,71 @@ type Expression struct {
 }
 
 var (
-	taskQueue     = make(chan Task, 100)
+	taskQueue     = make(chan *pb.Task, 100)
 	chTaskResults = make(map[int]chan float64)
 	expressions   = make(map[int]*Expression)
 	mu            sync.Mutex
 	expressionID  int
 )
 
+type TaskServer struct {
+	pb.UnimplementedTaskServiceServer
+}
+
+func (s *TaskServer) GetTask(ctx context.Context, req *pb.TaskRequest) (*pb.Task, error) {
+	select {
+	case task := <-taskQueue:
+		return task, nil
+	default:
+		return &pb.Task{HasTask: false}, nil
+	}
+}
+
+func (s *TaskServer) SendTaskResult(ctx context.Context, result *pb.TaskResult) (*pb.TaskResponse, error) {
+	mu.Lock()
+	ch, exists := chTaskResults[int(result.Id)]
+	mu.Unlock()
+
+	if !exists {
+		return &pb.TaskResponse{Success: false}, nil
+	}
+
+	ch <- result.Result
+	return &pb.TaskResponse{Success: true}, nil
+}
+
 func RunOrchestrator() {
+	// Запускаем HTTP сервер для API
+	go runHTTPServer()
+
+	// Запускаем gRPC сервер
+	runGRPCServer()
+}
+
+func runHTTPServer() {
 	http.HandleFunc("/api/v1/calculate", handleCalculate)
 	http.HandleFunc("/api/v1/expressions", handleExpressions)
 	http.HandleFunc("/api/v1/expressions/", handleExpressionByID)
-	http.HandleFunc("/internal/task", handleTask)
-	http.HandleFunc("/internal/task/result", handleTaskResult)
 
-	log.Println("Server started on :8080")
-	http.ListenAndServe(":8080", nil)
+	log.Println("HTTP server started on :8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("Failed to start HTTP server: %v", err)
+	}
+}
+
+func runGRPCServer() {
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	s := grpc.NewServer()
+	pb.RegisterTaskServiceServer(s, &TaskServer{})
+
+	log.Println("gRPC server started on :50051")
+	if err := s.Serve(lis); err != nil {
+		log.Fatalf("Failed to serve: %v", err)
+	}
 }
 
 func handleCalculate(w http.ResponseWriter, r *http.Request) {
@@ -146,7 +191,14 @@ func parseExpression(id int, expression string) {
 
 func addTask(id int, op string, arg1, arg2 float64) {
 	opTime := getOperationTime(op)
-	taskQueue <- Task{ID: id, Arg1: arg1, Arg2: arg2, Operation: op, OperationTime: opTime}
+	taskQueue <- &pb.Task{
+		Id:            int32(id),
+		Arg1:          arg1,
+		Arg2:          arg2,
+		Operation:     op,
+		OperationTime: int32(opTime),
+		HasTask:       true,
+	}
 }
 
 func getOperationTime(op string) int {
@@ -205,55 +257,4 @@ func handleExpressionByID(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{"expression": exp})
-}
-
-func handleTask(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		select {
-		case task := <-taskQueue:
-			json.NewEncoder(w).Encode(map[string]interface{}{"task": task})
-		default:
-			http.Error(w, "No tasks", http.StatusNotFound)
-		}
-		return
-	} else if r.Method == http.MethodPost {
-		var res struct {
-			ID     int     `json:"id"`
-			Result float64 `json:"result"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
-			http.Error(w, "Invalid request", http.StatusBadRequest)
-			return
-		}
-
-		mu.Lock()
-		ch, exists := chTaskResults[res.ID]
-		mu.Unlock()
-
-		if !exists {
-			http.Error(w, "Task not found", http.StatusNotFound)
-			return
-		}
-
-		ch <- res.Result
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-}
-
-func handleTaskResult(w http.ResponseWriter, r *http.Request) {
-	var res struct {
-		ID     int     `json:"id"`
-		Result float64 `json:"result"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
-		return
-	}
-
-	mu.Lock()
-	chTaskResults[res.ID] <- res.Result
-	mu.Unlock()
-
-	w.WriteHeader(http.StatusOK)
 }

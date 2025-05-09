@@ -1,53 +1,58 @@
 package agent
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"log"
-	"net/http"
 	"time"
 
 	"github.com/Oleg-Neevin/distributed_calculator_final/pkg"
+	pb "github.com/Oleg-Neevin/distributed_calculator_final/proto/generated/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
-
-type Task struct {
-	ID            int     `json:"id"`
-	Arg1          float64 `json:"arg1"`
-	Arg2          float64 `json:"arg2"`
-	Operation     string  `json:"operation"`
-	OperationTime int     `json:"operation_time"`
-}
 
 func StartAgent() {
 	computingPower := pkg.GetEnvInt("COMPUTING_POWER", 3)
 	for i := 0; i < computingPower; i++ {
-		go worker()
+		go worker(i)
 	}
 }
 
-func worker() {
+func worker(id int) {
+	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	if err != nil {
+		log.Fatalf("Worker %d failed to connect: %v", id, err)
+	}
+	defer conn.Close()
+
+	client := pb.NewTaskServiceClient(conn)
+
 	for {
-		resp, err := http.Get("http://localhost:8080/internal/task")
+		task, err := client.GetTask(context.Background(), &pb.TaskRequest{})
 		if err != nil {
-			log.Print(err)
+			log.Printf("Worker %d error getting task: %v", id, err)
 			time.Sleep(1 * time.Second)
-			resp.Body.Close()
 			continue
 		}
-		defer resp.Body.Close()
-
-		var res struct {
-			Task Task `json:"task"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-			resp.Body.Close()
+		if !task.HasTask {
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
+		log.Printf("Worker %d received task: %+v", id, task)
 
-		time.Sleep(time.Duration(res.Task.OperationTime) * time.Millisecond)
-		result := compute(res.Task.Arg1, res.Task.Arg2, res.Task.Operation)
-		postResult(res.Task.ID, result)
+		time.Sleep(time.Duration(task.OperationTime) * time.Millisecond)
+		result := compute(task.Arg1, task.Arg2, task.Operation)
+		_, err = client.SendTaskResult(context.Background(), &pb.TaskResult{
+			Id:     task.Id,
+			Result: result,
+		})
+
+		if err != nil {
+			log.Printf("Worker %d error sending result: %v", id, err)
+		} else {
+			log.Printf("Worker %d completed task %d with result %f", id, task.Id, result)
+		}
 	}
 }
 
@@ -65,12 +70,4 @@ func compute(arg1, arg2 float64, op string) float64 {
 		}
 	}
 	return 0
-}
-
-func postResult(id int, result float64) {
-	data, _ := json.Marshal(map[string]interface{}{"id": id, "result": result})
-	_, err := http.Post("http://localhost:8080/internal/task", "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		log.Printf("Error posting result for task %d: %v", id, err)
-	}
 }
