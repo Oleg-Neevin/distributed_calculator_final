@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/Oleg-Neevin/distributed_calculator_final/internal/db"
 	"github.com/Oleg-Neevin/distributed_calculator_final/pkg"
 	pb "github.com/Oleg-Neevin/distributed_calculator_final/proto/generated/proto"
 	"google.golang.org/grpc"
@@ -24,9 +25,7 @@ type Expression struct {
 var (
 	taskQueue     = make(chan *pb.Task, 100)
 	chTaskResults = make(map[int]chan float64)
-	expressions   = make(map[int]*Expression)
 	mu            sync.Mutex
-	expressionID  int
 )
 
 type TaskServer struct {
@@ -38,20 +37,46 @@ func (s *TaskServer) GetTask(ctx context.Context, req *pb.TaskRequest) (*pb.Task
 	case task := <-taskQueue:
 		return task, nil
 	default:
+		database := db.GetInstance()
+		unprocessedTasks, err := database.GetUnprocessedTasks(1)
+		if err != nil {
+			log.Printf("Error receiving unprocessed tasks: %v", err)
+			return &pb.Task{HasTask: false}, nil
+		}
+
+		if len(unprocessedTasks) > 0 {
+			task := unprocessedTasks[0]
+			opTime := getOperationTime(task.Operation)
+			return &pb.Task{
+				Id:            int32(task.ID),
+				Arg1:          task.Arg1,
+				Arg2:          task.Arg2,
+				Operation:     task.Operation,
+				OperationTime: int32(opTime),
+				HasTask:       true,
+			}, nil
+		}
+
 		return &pb.Task{HasTask: false}, nil
 	}
 }
 
 func (s *TaskServer) SendTaskResult(ctx context.Context, result *pb.TaskResult) (*pb.TaskResponse, error) {
+	database := db.GetInstance()
+	err := database.UpdateTaskResult(int(result.Id), result.Result)
+	if err != nil {
+		log.Printf("Error saving the task result: %v", err)
+		return &pb.TaskResponse{Success: false}, nil
+	}
+
 	mu.Lock()
 	ch, exists := chTaskResults[int(result.Id)]
 	mu.Unlock()
 
-	if !exists {
-		return &pb.TaskResponse{Success: false}, nil
+	if exists {
+		ch <- result.Result
 	}
 
-	ch <- result.Result
 	return &pb.TaskResponse{Success: true}, nil
 }
 
@@ -99,9 +124,23 @@ func handleCalculate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	database := db.GetInstance()
+	lastID, err := database.GetLastExpressionID()
+	if err != nil {
+		log.Printf("Error getting last ID: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	mu.Lock()
-	expressionID++
-	expressions[expressionID] = &Expression{ID: expressionID, Expr: req.Expr, Status: "processing"}
+	expressionID := lastID + 1
+	err = database.SaveExpression(expressionID, req.Expr, "processing", 0)
+	if err != nil {
+		log.Printf("Error saving expression: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	chTaskResults[expressionID] = make(chan float64, 1)
 	mu.Unlock()
 
@@ -130,9 +169,8 @@ func parseExpression(id int, expression string) {
 
 	// проверяем количество чисел и знаков
 	if len(numbers) != len(operations)+1 {
-		mu.Lock()
-		expressions[id] = &Expression{ID: id, Expr: expression, Status: "error", Result: 0}
-		mu.Unlock()
+		database := db.GetInstance()
+		database.SaveExpression(id, expression, "error", 0)
 		return
 	}
 
@@ -140,23 +178,31 @@ func parseExpression(id int, expression string) {
 	for i := 0; i < len(operations); i++ {
 		switch operations[i] {
 		case '*':
-			addTask(id, "*", numbers[i], numbers[i+1])
+			taskID, res := addTask(id, "*", numbers[i], numbers[i+1])
+			if taskID == -1 {
+				database := db.GetInstance()
+				database.SaveExpression(id, expression, "error", 0)
+				return
+			}
 
-			res := <-chTaskResults[id]
 			numbers = append(append(numbers[:i], res), numbers[i+2:]...)
 			operations = append(operations[:i], operations[i+1:]...)
 			i--
 
 		case '/':
 			if numbers[i+1] == 0 {
-				mu.Lock()
-				expressions[id] = &Expression{ID: id, Expr: expression, Status: "error", Result: 0}
-				mu.Unlock()
+				database := db.GetInstance()
+				database.SaveExpression(id, expression, "error", 0)
 				return
 			}
-			addTask(id, "/", numbers[i], numbers[i+1])
 
-			res := <-chTaskResults[id]
+			taskID, res := addTask(id, "/", numbers[i], numbers[i+1])
+			if taskID == -1 {
+				database := db.GetInstance()
+				database.SaveExpression(id, expression, "error", 0)
+				return
+			}
+
 			numbers = append(append(numbers[:i], res), numbers[i+2:]...)
 			operations = append(operations[:i], operations[i+1:]...)
 			i--
@@ -167,38 +213,57 @@ func parseExpression(id int, expression string) {
 	for i := 0; i < len(operations); i++ {
 		switch operations[i] {
 		case '+':
-			addTask(id, "+", numbers[i], numbers[i+1])
-
-			res := <-chTaskResults[id]
+			taskID, res := addTask(id, "+", numbers[i], numbers[i+1])
+			if taskID == -1 {
+				database := db.GetInstance()
+				database.SaveExpression(id, expression, "error", 0)
+				return
+			}
 			numbers = append(append(numbers[:i], res), numbers[i+2:]...)
 			operations = append(operations[:i], operations[i+1:]...)
 			i--
 
 		case '-':
-			addTask(id, "-", numbers[i], numbers[i+1])
-
-			res := <-chTaskResults[id]
+			taskID, res := addTask(id, "-", numbers[i], numbers[i+1])
+			if taskID == -1 {
+				database := db.GetInstance()
+				database.SaveExpression(id, expression, "error", 0)
+				return
+			}
 			numbers = append(append(numbers[:i], res), numbers[i+2:]...)
 			operations = append(operations[:i], operations[i+1:]...)
 			i--
 		}
 	}
 
-	mu.Lock()
-	expressions[id] = &Expression{ID: id, Expr: expression, Status: "completed", Result: numbers[0]}
-	mu.Unlock()
+	database := db.GetInstance()
+	database.SaveExpression(id, expression, "completed", numbers[0])
 }
 
-func addTask(id int, op string, arg1, arg2 float64) {
+func addTask(expressionID int, op string, arg1, arg2 float64) (int, float64) {
+	database := db.GetInstance()
+	taskID, err := database.SaveTask(expressionID, arg1, arg2, op)
+	if err != nil {
+		log.Printf("Error saving an task: %v", err)
+		return -1, 0
+	}
+
 	opTime := getOperationTime(op)
 	taskQueue <- &pb.Task{
-		Id:            int32(id),
+		Id:            int32(taskID),
 		Arg1:          arg1,
 		Arg2:          arg2,
 		Operation:     op,
 		OperationTime: int32(opTime),
 		HasTask:       true,
 	}
+
+	mu.Lock()
+	ch := chTaskResults[expressionID]
+	mu.Unlock()
+
+	result := <-ch
+	return taskID, result
 }
 
 func getOperationTime(op string) int {
@@ -221,12 +286,23 @@ func handleExpressions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mu.Lock()
-	var expList []Expression
-	for _, exp := range expressions {
-		expList = append(expList, *exp)
+	database := db.GetInstance()
+	dbExpressions, err := database.GetAllExpressions()
+	if err != nil {
+		log.Printf("Error receiving expressions: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
-	mu.Unlock()
+
+	var expList []Expression
+	for _, exp := range dbExpressions {
+		expList = append(expList, Expression{
+			ID:     exp.ID,
+			Expr:   exp.Expression,
+			Status: exp.Status,
+			Result: exp.Result,
+		})
+	}
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{"expressions": expList})
@@ -246,15 +322,21 @@ func handleExpressionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mu.Lock()
-	exp, found := expressions[id]
-	mu.Unlock()
-
-	if !found {
+	database := db.GetInstance()
+	expr, status, result, err := database.GetExpression(id)
+	if err != nil {
 		http.Error(w, "Expression not found", http.StatusNotFound)
 		return
 	}
 
+	expression := Expression{
+		ID:     id,
+		Expr:   expr,
+		Status: status,
+		Result: result,
+	}
+
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{"expression": exp})
+	json.NewEncoder(w).Encode(map[string]interface{}{"expression": expression})
+
 }
