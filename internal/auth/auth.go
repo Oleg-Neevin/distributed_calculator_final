@@ -42,7 +42,7 @@ type Claims struct {
 }
 
 func GenerateToken(userID int) (string, error) {
-	expirationTime := time.Now().Add(30 * time.Minute) // Токен действителен 24 часа
+	expirationTime := time.Now().Add(30 * time.Minute)
 	claims := &Claims{
 		UserID: userID,
 		StandardClaims: jwt.StandardClaims{
