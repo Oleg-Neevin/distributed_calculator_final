@@ -34,6 +34,7 @@ func (d *Database) initDB() {
 	_, err = d.db.Exec(`
 	CREATE TABLE IF NOT EXISTS expressions (
 		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL,
 		expression TEXT NOT NULL,
 		status TEXT NOT NULL,
 		result REAL
