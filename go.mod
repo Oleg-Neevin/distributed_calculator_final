@@ -3,7 +3,9 @@ module github.com/Oleg-Neevin/distributed_calculator_final
 go 1.23.0
 
 require (
+	github.com/golang-jwt/jwt v3.2.2+incompatible
 	github.com/mattn/go-sqlite3 v1.14.28
+	golang.org/x/crypto v0.33.0
 	google.golang.org/grpc v1.72.0
 	google.golang.org/protobuf v1.36.6
 )

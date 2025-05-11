@@ -20,6 +20,18 @@ var (
 
 func (d *Database) initDB() {
 	_, err := d.db.Exec(`
+	CREATE TABLE IF NOT EXISTS users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		login TEXT NOT NULL UNIQUE,
+		password TEXT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)
+	`)
+	if err != nil {
+		log.Fatalf("Error creating users table: %v", err)
+	}
+
+	_, err = d.db.Exec(`
 	CREATE TABLE IF NOT EXISTS expressions (
 		id INTEGER PRIMARY KEY,
 		expression TEXT NOT NULL,
@@ -27,7 +39,6 @@ func (d *Database) initDB() {
 		result REAL
 	)
 	`)
-
 	if err != nil {
 		log.Fatalf("Error make expressions db: %v", err)
 	}
@@ -47,6 +58,42 @@ func (d *Database) initDB() {
 	if err != nil {
 		log.Fatalf("Error make tasks db: %v", err)
 	}
+}
+
+func (d *Database) CreateUser(login, hashedPassword string) (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.db.Exec(
+		"INSERT INTO users (login, password) VALUES (?, ?)",
+		login, hashedPassword,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(id), nil
+}
+
+func (d *Database) GetUserByLogin(login string) (int, string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var id int
+	var password string
+	err := d.db.QueryRow(
+		"SELECT id, password FROM users WHERE login = ?",
+		login,
+	).Scan(&id, &password)
+	if err != nil {
+		return 0, "", err
+	}
+	return id, password, nil
 }
 
 func GetInstance() *Database {
@@ -74,7 +121,7 @@ func (d *Database) GetLastExpressionID() (int, error) {
 	return id, nil
 }
 
-func (d *Database) SaveExpression(id int, expression string, status string, result float64) error {
+func (d *Database) SaveExpression(id int, userID int, expression string, status string, result float64) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -91,14 +138,14 @@ func (d *Database) SaveExpression(id int, expression string, status string, resu
 		)
 	} else {
 		_, err = d.db.Exec(
-			"INSERT INTO expressions (id, expression, status, result) VALUES (?, ?, ?, ?)",
-			id, expression, status, result,
+			"INSERT INTO expressions (id, user_id, expression, status, result) VALUES (?, ?, ?, ?, ?)",
+			id, userID, expression, status, result,
 		)
 	}
 	return err
 }
 
-func (d *Database) GetExpression(id int) (string, string, float64, error) {
+func (d *Database) GetExpression(id int, userID int) (string, string, float64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -106,8 +153,8 @@ func (d *Database) GetExpression(id int) (string, string, float64, error) {
 	var status string
 	var result float64
 	err := d.db.QueryRow(
-		"SELECT expression, status, result FROM expressions WHERE id = ?",
-		id,
+		"SELECT expression, status, result FROM expressions WHERE id = ? AND user_id = ?",
+		id, userID,
 	).Scan(&expr, &status, &result)
 	if err != nil {
 		return "", "", 0, err
@@ -115,7 +162,7 @@ func (d *Database) GetExpression(id int) (string, string, float64, error) {
 	return expr, status, result, nil
 }
 
-func (d *Database) GetAllExpressions() ([]struct {
+func (d *Database) GetAllExpressions(userID int) ([]struct {
 	ID         int
 	Expression string
 	Status     string
@@ -124,7 +171,7 @@ func (d *Database) GetAllExpressions() ([]struct {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	rows, err := d.db.Query("SELECT id, expression, status, result FROM expressions ORDER BY id")
+	rows, err := d.db.Query("SELECT id, expression, status, result FROM expressions WHERE user_id = ? ORDER BY id", userID)
 	if err != nil {
 		return nil, err
 	}

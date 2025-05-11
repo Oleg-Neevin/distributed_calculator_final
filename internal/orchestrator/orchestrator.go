@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/Oleg-Neevin/distributed_calculator_final/internal/auth"
 	"github.com/Oleg-Neevin/distributed_calculator_final/internal/db"
 	"github.com/Oleg-Neevin/distributed_calculator_final/pkg"
 	pb "github.com/Oleg-Neevin/distributed_calculator_final/proto/generated/proto"
@@ -89,9 +90,12 @@ func RunOrchestrator() {
 }
 
 func runHTTPServer() {
-	http.HandleFunc("/api/v1/calculate", handleCalculate)
-	http.HandleFunc("/api/v1/expressions", handleExpressions)
-	http.HandleFunc("/api/v1/expressions/", handleExpressionByID)
+	http.HandleFunc("/api/v1/register", handleRegister)
+	http.HandleFunc("/api/v1/login", handleLogin)
+
+	http.HandleFunc("/api/v1/calculate", auth.AuthMiddleware(handleCalculate))
+	http.HandleFunc("/api/v1/expressions", auth.AuthMiddleware(handleExpressions))
+	http.HandleFunc("/api/v1/expressions/", auth.AuthMiddleware(handleExpressionByID))
 
 	log.Println("HTTP server started on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
@@ -124,6 +128,12 @@ func handleCalculate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, err := auth.GetUserIDFromContext(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	database := db.GetInstance()
 	lastID, err := database.GetLastExpressionID()
 	if err != nil {
@@ -134,7 +144,7 @@ func handleCalculate(w http.ResponseWriter, r *http.Request) {
 
 	mu.Lock()
 	expressionID := lastID + 1
-	err = database.SaveExpression(expressionID, req.Expr, "processing", 0)
+	err = database.SaveExpression(expressionID, userID, req.Expr, "processing", 0)
 	if err != nil {
 		log.Printf("Error saving expression: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -144,13 +154,13 @@ func handleCalculate(w http.ResponseWriter, r *http.Request) {
 	chTaskResults[expressionID] = make(chan float64, 1)
 	mu.Unlock()
 
-	go parseExpression(expressionID, req.Expr)
+	go parseExpression(expressionID, userID, req.Expr)
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]int{"id": expressionID})
 }
 
-func parseExpression(id int, expression string) {
+func parseExpression(id int, userID int, expression string) {
 	var operations []rune
 	var numbers []float64
 
@@ -170,7 +180,7 @@ func parseExpression(id int, expression string) {
 	// проверяем количество чисел и знаков
 	if len(numbers) != len(operations)+1 {
 		database := db.GetInstance()
-		database.SaveExpression(id, expression, "error", 0)
+		database.SaveExpression(id, userID, expression, "error", 0)
 		return
 	}
 
@@ -181,7 +191,7 @@ func parseExpression(id int, expression string) {
 			taskID, res := addTask(id, "*", numbers[i], numbers[i+1])
 			if taskID == -1 {
 				database := db.GetInstance()
-				database.SaveExpression(id, expression, "error", 0)
+				database.SaveExpression(id, userID, expression, "error", 0)
 				return
 			}
 
@@ -192,14 +202,14 @@ func parseExpression(id int, expression string) {
 		case '/':
 			if numbers[i+1] == 0 {
 				database := db.GetInstance()
-				database.SaveExpression(id, expression, "error", 0)
+				database.SaveExpression(id, userID, expression, "error", 0)
 				return
 			}
 
 			taskID, res := addTask(id, "/", numbers[i], numbers[i+1])
 			if taskID == -1 {
 				database := db.GetInstance()
-				database.SaveExpression(id, expression, "error", 0)
+				database.SaveExpression(id, userID, expression, "error", 0)
 				return
 			}
 
@@ -216,7 +226,7 @@ func parseExpression(id int, expression string) {
 			taskID, res := addTask(id, "+", numbers[i], numbers[i+1])
 			if taskID == -1 {
 				database := db.GetInstance()
-				database.SaveExpression(id, expression, "error", 0)
+				database.SaveExpression(id, userID, expression, "error", 0)
 				return
 			}
 			numbers = append(append(numbers[:i], res), numbers[i+2:]...)
@@ -227,7 +237,7 @@ func parseExpression(id int, expression string) {
 			taskID, res := addTask(id, "-", numbers[i], numbers[i+1])
 			if taskID == -1 {
 				database := db.GetInstance()
-				database.SaveExpression(id, expression, "error", 0)
+				database.SaveExpression(id, userID, expression, "error", 0)
 				return
 			}
 			numbers = append(append(numbers[:i], res), numbers[i+2:]...)
@@ -237,7 +247,7 @@ func parseExpression(id int, expression string) {
 	}
 
 	database := db.GetInstance()
-	database.SaveExpression(id, expression, "completed", numbers[0])
+	database.SaveExpression(id, userID, expression, "completed", numbers[0])
 }
 
 func addTask(expressionID int, op string, arg1, arg2 float64) (int, float64) {
@@ -286,8 +296,14 @@ func handleExpressions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, err := auth.GetUserIDFromContext(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	database := db.GetInstance()
-	dbExpressions, err := database.GetAllExpressions()
+	dbExpressions, err := database.GetAllExpressions(userID)
 	if err != nil {
 		log.Printf("Error receiving expressions: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -314,6 +330,12 @@ func handleExpressionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, err := auth.GetUserIDFromContext(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	idStr := r.URL.Path[len("/api/v1/expressions/"):]
 
 	id, err := strconv.Atoi(idStr)
@@ -323,7 +345,7 @@ func handleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	database := db.GetInstance()
-	expr, status, result, err := database.GetExpression(id)
+	expr, status, result, err := database.GetExpression(id, userID)
 	if err != nil {
 		http.Error(w, "Expression not found", http.StatusNotFound)
 		return
@@ -339,4 +361,89 @@ func handleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{"expression": expression})
 
+}
+
+type UserCredentials struct {
+	Login    string `json:"login"`
+	Password string `json:"password"`
+}
+
+func handleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var credentials UserCredentials
+	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Проверка наличия логина и пароля
+	if credentials.Login == "" || credentials.Password == "" {
+		http.Error(w, "Login and password are required", http.StatusBadRequest)
+		return
+	}
+
+	// Хеширование пароля
+	hashedPassword, err := auth.GeneratePasswordHash(credentials.Password)
+	if err != nil {
+		log.Printf("Error hashing password: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Сохранение пользователя в БД
+	database := db.GetInstance()
+	_, err = database.CreateUser(credentials.Login, hashedPassword)
+	if err != nil {
+		log.Printf("Error creating user: %v", err)
+		http.Error(w, "User already exists or internal error", http.StatusConflict)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var credentials UserCredentials
+	if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if credentials.Login == "" || credentials.Password == "" {
+		http.Error(w, "Login and password are required", http.StatusBadRequest)
+		return
+	}
+
+	database := db.GetInstance()
+	userID, hashedPassword, err := database.GetUserByLogin(credentials.Login)
+	if err != nil {
+		log.Printf("Error getting user: %v", err)
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if !auth.CheckPasswordHash(credentials.Password, hashedPassword) {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	token, err := auth.GenerateToken(userID)
+	if err != nil {
+		log.Printf("Error generating token: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
