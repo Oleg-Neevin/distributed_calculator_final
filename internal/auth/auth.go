@@ -109,7 +109,6 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Добавим userID в контекст запроса
 		ctx := r.Context()
 		ctx = contextWithUserID(ctx, userID)
 		r = r.WithContext(ctx)
@@ -121,6 +120,10 @@ func AuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
 type contextKey string
 
 const userIDKey contextKey = "userID"
+
+func GetUserIDContextKey() contextKey {
+	return userIDKey
+}
 
 func contextWithUserID(ctx context.Context, userID int) context.Context {
 	return context.WithValue(ctx, userIDKey, userID)
