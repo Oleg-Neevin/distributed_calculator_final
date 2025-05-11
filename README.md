@@ -1,48 +1,67 @@
 # distributed_calculator_final
 
-# distributed_calc
 Distributed Arithmetic Expression Calculator
 
-# Распределенный Калькулятор Арифметических Выражений
+Distributed Calculator - это высокопроизводительная распределенная система для вычисления арифметических выражений. Система разбивает арифметические выражения на отдельные операции и распределяет их между рабочими агентами для параллельной обработки.
 
-Распределенная система для вычисления арифметических выражений с поддержкой базовых операций (+, -, *, /), которая распределяет вычисления между несколькими рабочими агентами.
+## Содержание
+
+- [Архитектура](#архитектура)
+- [Возможности](#возможности)
+- [Установка](#установка)
+- [Конфигурация](#конфигурация)
+- [API](#api)
+  - [Аутентификация](#аутентификация)
+  - [Вычисление выражений](#вычисление-выражений)
+- [Примеры использования](#примеры-использования)
+- [Технические детали](#технические-детали)
+- [Тестирование](#тестирование)
 
 ## Архитектура
 
-Система следует распределенной архитектуре:
+Система следует микросервисной архитектуре:
 
-1. **Клиент** отправляет выражение через API
-2. **Оркестратор** разбирает выражение на отдельные операции
+1. **Клиент** отправляет выражение через REST API
+2. **Оркестратор** разбирает выражение на отдельные операции с учетом приоритетов операций
 3. **Оркестратор** отправляет эти операции как задачи в очередь задач
-4. **Рабочие агенты** берут задачи из очереди и обрабатывают их
+4. **Рабочие агенты** берут задачи из очереди через gRPC и обрабатывают их
 5. **Рабочие агенты** отправляют результаты обратно **Оркестратору**
 6. **Оркестратор** продолжает обработку выражения с полученными результатами
-7. Когда все операции завершены, итоговый результат сохраняется
+7. Когда все операции завершены, итоговый результат сохраняется в базе данных
+8. 
+## Возможности
 
-![image](https://github.com/user-attachments/assets/78450c9f-4b9a-43e6-a587-68beeacb3f0b)
-
+- Вычисление арифметических выражений с поддержкой операций: `+`, `-`, `*`, `/`
+- Учет приоритетов операций (сначала умножение и деление, затем сложение и вычитание)
+- Многопользовательский режим с JWT-аутентификацией
+- Масштабируемая архитектура с настраиваемым количеством рабочих агентов
+- Хранение истории вычислений для каждого пользователя
+- REST API для интеграции с другими системами
+- gRPC для внутреннего взаимодействия между сервисами
 
 ## Установка
 
 ### Требования
 
 - Go 1.23 или выше
+- SQLite3
 
-### Настройка
+### Шаги установки
 
 1. Клонируйте репозиторий:
+   ```bash
+   git clone https://github.com/your-username/distributed_calculator.git
    ```
-   git clone https://github.com/Oleg-Neevin/distributed_calc.git
-   ```
-2. Перейдите в корневую директорию:
-   ```
-   cd distributed_calc
-   ```
-3. Запустите приложение:
-   ```
-   go run cmd/main.go
+2. Перейдите в корневую директорию проекта:
+   ```bash
+   cd .\distributed_calculator_final\
    ```
 
+3. Запустите приложение:
+   ```bash
+   go run .\cmd\main.go
+   ```
+   
 ## Конфигурация
 
 Приложение можно настроить с помощью переменных среды:
@@ -54,15 +73,69 @@ Distributed Arithmetic Expression Calculator
 | `TIME_SUBTRACTION_MS` | Время обработки операций вычитания (мс) | 100 |
 | `TIME_MULTIPLICATIONS_MS` | Время обработки операций умножения (мс) | 200 |
 | `TIME_DIVISIONS_MS` | Время обработки операций деления (мс) | 300 |
+| `JWT_SECRET` | Секретный ключ для JWT | "default_jwt_secret_key" |
 
-Пример:
+Пример запуска с настроенными параметрами:
+```bash
+COMPUTING_POWER=5 TIME_ADDITION_MS=50 JWT_SECRET="my_secure_secret" go run cmd/main.go
 ```
-COMPUTING_POWER=5 TIME_ADDITION_MS=50 go run cmd/main.go
+
+## API
+
+### Аутентификация
+
+#### Регистрация пользователя
+
+**Запрос:**
+```
+POST /api/v1/register
 ```
 
-## Использование API
+**Тело:**
+```json
+{
+  "login": "username",
+  "password": "secure_password"
+}
+```
 
-### Вычисление выражения
+**Ответ (успешный):**
+```json
+{
+  "status": "ok"
+}
+```
+
+#### Вход в систему
+
+**Запрос:**
+```
+POST /api/v1/login
+```
+
+**Тело:**
+```json
+{
+  "login": "username",
+  "password": "secure_password"
+}
+```
+
+**Ответ (успешный):**
+```json
+{
+  "token": "eyJhbGciOiJIUzI..."
+}
+```
+
+### Вычисление выражений
+
+Все запросы к этим эндпоинтам требуют JWT-токена в заголовке:
+```
+Authorization: Bearer <ваш_токен>
+```
+
+#### Вычисление выражения
 
 **Запрос:**
 ```
@@ -83,16 +156,7 @@ POST /api/v1/calculate
 }
 ```
 
-**Пример:**
-```bash
-curl --location 'http://localhost:8080/api/v1/calculate' \
---header 'Content-Type: application/json' \
---data '{
-  "expression": "2+3*4"
-}'
-```
-
-### Получение всех выражений
+#### Получение всех выражений пользователя
 
 **Запрос:**
 ```
@@ -119,12 +183,7 @@ GET /api/v1/expressions
 }
 ```
 
-**Пример:**
-```bash
-curl --location 'http://localhost:8080/api/v1/expressions'
-```
-
-### Получение выражения по ID
+#### Получение выражения по ID
 
 **Запрос:**
 ```
@@ -143,69 +202,64 @@ GET /api/v1/expressions/{id}
 }
 ```
 
-**Пример:**
-```bash
-curl --location 'http://localhost:8080/api/v1/expressions/1'
-```
-
 ## Примеры использования
 
-### Успешный случай
+### Типичный сценарий использования
 
-Отправка выражения:
+1. Регистрация пользователя:
+```bash
+curl --location 'http://localhost:8080/api/v1/register' \
+--header 'Content-Type: application/json' \
+--data '{
+  "login": "user1",
+  "password": "password123"
+}'
+```
+
+2. Вход в систему:
+```bash
+curl --location 'http://localhost:8080/api/v1/login' \
+--header 'Content-Type: application/json' \
+--data '{
+  "login": "user1",
+  "password": "password123"
+}'
+```
+
+Сохраните полученный токен.
+
+3. Вычисление выражения:
 ```bash
 curl --location 'http://localhost:8080/api/v1/calculate' \
+--header 'Authorization: Bearer <ваш_токен>' \
 --header 'Content-Type: application/json' \
 --data '{
   "expression": "2+3*4"
 }'
 ```
 
-Ответ:
-```json
-{
-  "id": 1
-}
-```
-
-Проверка результата:
+4. Получение результата:
 ```bash
-curl --location 'http://localhost:8080/api/v1/expressions/1'
+curl --location 'http://localhost:8080/api/v1/expressions/1' \
+--header 'Authorization: Bearer <ваш_токен>'
 ```
 
-Ответ:
-```json
-{
-  "expression": {
-    "id": 1,
-    "expression": "2+3*4",
-    "status": "completed",
-    "result": 14
-  }
-}
-```
+### Обработка ошибок
 
-### Случай ошибки (деление на ноль)
-
-Отправка выражения с делением на ноль:
+#### Деление на ноль:
 ```bash
 curl --location 'http://localhost:8080/api/v1/calculate' \
+--header 'Authorization: Bearer <ваш_токен>' \
 --header 'Content-Type: application/json' \
 --data '{
   "expression": "5/0"
 }'
 ```
 
-Ответ:
-```json
-{
-  "id": 2
-}
-```
-
 Проверка результата:
 ```bash
-curl --location 'http://localhost:8080/api/v1/expressions/2'
+curl --location 'http://localhost:8080/api/v1/expressions/2' \
+--header 'Authorization: Bearer <ваш_токен>'
 ```
 
 Ответ:
@@ -220,39 +274,14 @@ curl --location 'http://localhost:8080/api/v1/expressions/2'
 }
 ```
 
-### Случай ошибки (неверное выражение)
-
-Отправка неверного выражения:
+#### Неверное выражение:
 ```bash
 curl --location 'http://localhost:8080/api/v1/calculate' \
+--header 'Authorization: Bearer <ваш_токен>' \
 --header 'Content-Type: application/json' \
 --data '{
   "expression": "2++3"
 }'
-```
-
-Ответ:
-```json
-{
-  "id": 3
-}
-```
-
-Проверка результата:
-```bash
-curl --location 'http://localhost:8080/api/v1/expressions/3'
-```
-
-Ответ:
-```json
-{
-  "expression": {
-    "id": 3,
-    "expression": "2++3",
-    "status": "error",
-    "result": 0
-  }
-}
 ```
 
 ## Тестирование
@@ -262,6 +291,9 @@ curl --location 'http://localhost:8080/api/v1/expressions/3'
 ```bash
 go test ./...
 ```
+
+---
+
 ```
 ───▐▀▄──────▄▀▌───▄▄▄▄▄▄▄
 ───▌▒▒▀▄▄▄▄▀▒▒▐▄▀▀▒██▒██▒▀▀▄
