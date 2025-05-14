@@ -50,7 +50,7 @@ Distributed Calculator - это высокопроизводительная р�
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/your-username/distributed_calculator.git
+   git clone https://github.com/Oleg-Neevin/distributed_calculator_final
    ```
 2. Перейдите в корневую директорию проекта:
    ```bash
